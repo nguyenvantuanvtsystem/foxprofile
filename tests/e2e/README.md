@@ -21,4 +21,4 @@ FOXPROFILE_DATA_DIR=camoufox_data        # api_e2e đọc fingerprint.json ở �
 E2E_OUT=e2e-output                       # nơi lưu ảnh chụp
 ```
 
-Các script tạo profile tên `e2e-*`, `mcp-demo`, `http-demo`, `panel-demo`, `ctl-test`; nên chạy với một thư mục dữ liệu riêng (`FOXPROFILE_DATA_DIR`, `FOXPROFILE_PROFILES_FILE`) thay vì dữ liệu thật.
+Các script tạo profile tên `e2e-*`, `mcp-demo`, `http-demo`, `panel-demo`, `ctl-test`; nên chạy với một thư mục dữ liệu riêng (`FOXPROFILE_DATA_DIR`, `FOXPROFILE_PROFILES_FILE`) thay vì dữ liệu thật. Profile test live tạo với `engine: "chrome"` để không mở cửa sổ Firefox trên máy user.

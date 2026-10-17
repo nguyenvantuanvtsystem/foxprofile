@@ -1,3 +1,4 @@
+import contextlib
 import threading
 import time
 
@@ -25,6 +26,12 @@ class AppState:
         self._ui_update_lock = threading.Lock()
         self._selected_profiles: set[str] = set()
         self._selection_lock = threading.Lock()
+        # Tick order, so one-tap follow can pick the first-ticked profile
+        # as master. A set alone cannot remember who was ticked first.
+        self._selection_order: list[str] = []
+        # One-tap follow indicator (mirrors the API mirror session).
+        self.follow_active = False
+        self.follow_master = ""
 
     def is_loading(self, name: str) -> bool:
         with self._loading_lock:
@@ -77,8 +84,11 @@ class AppState:
         with self._selection_lock:
             if name in self._selected_profiles:
                 self._selected_profiles.discard(name)
+                with contextlib.suppress(ValueError):
+                    self._selection_order.remove(name)
             else:
                 self._selected_profiles.add(name)
+                self._selection_order.append(name)
 
     def is_selected(self, name: str) -> bool:
         with self._selection_lock:
@@ -91,7 +101,16 @@ class AppState:
     def clear_selection(self) -> None:
         with self._selection_lock:
             self._selected_profiles.clear()
+            self._selection_order.clear()
 
     def select_all(self, names: list[str]) -> None:
         with self._selection_lock:
             self._selected_profiles.update(names)
+            for n in names:
+                if n not in self._selection_order:
+                    self._selection_order.append(n)
+
+    def selection_order(self) -> list[str]:
+        """Ticked profiles, first-ticked first (stale names already removed)."""
+        with self._selection_lock:
+            return [n for n in self._selection_order if n in self._selected_profiles]

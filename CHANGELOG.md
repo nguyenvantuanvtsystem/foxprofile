@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### Thêm
+- Chọn mạng khi tạo profile: "Mạng máy (không proxy)" hoặc proxy riêng, nhớ lựa chọn cho lần sau.
+- Extension theo profile (engine Chrome): gắn thư mục có sẵn, tải .zip lên, gỡ, ghim lên toolbar, và cài 1 đường dẫn cho cả dàn đã chọn.
+- Mở nhiều profile xếp thẳng vào lưới (tự chọn 5x2 cho 10 cửa sổ màn rộng); nút Xếp cửa sổ xếp lại được, thiếu quyền thì tự mở lại vào lưới.
+- Đồng bộ 1 lệnh cho nhiều nick (cùng URL/text/Enter/click tọa độ) và chế độ Theo dõi (nick chính làm gì, còn lại chép theo).
+- Nút Theo dõi 1 chạm: bấm 1 cái là theo dõi (nick tick đầu tiên làm chính), bấm lần nữa là dừng; nút sáng cam khi đang theo dõi.
+- Theo dõi chép cả tab: mở/chuyển/đóng tab ở nick chính đều chép sang các nick theo (trước đây chỉ chép click/gõ/cuộn/chuyển trang trong tab).
+- Cổng DevTools (CDP) riêng cho từng nick Chrome, bật mặc định, xem ở trạng thái/log để cắm automation và AI agent.
+- Vân tay nâng cao (engine Chrome, nút vân tay mỗi nick): xem seed/brand/bản OS/số core, User-Agent tay, WebRTC theo proxy hoặc chỉ IP công khai, định vị hỏi/cho phép/chặn, đổi máy mới (seed mới, trang web sẽ thấy máy khác).
+- Kho User-Agent sẵn trong dialog vân tay (Chrome/Edge/Firefox/Safari theo Windows/macOS/Linux/Android), chọn 1 chạm hoặc tự nhập.
+- Launcher single-instance: mở app lần hai chỉ hiện cửa sổ cũ, tự dọn tiến trình Flet/Chromium mồ côi để Dock không đầy icon.
+
 ### Sửa
 - App desktop: nút "Launch" không còn bị gãy chữ thành hai dòng khi dùng giao diện English.
 - Proxy dạng `host:port:user:pass` có `@` hoặc `:` trong mật khẩu không còn bị bỏ qua (trước đây profile mở mà không qua proxy). Chấp nhận proxy IPv6 dạng `[2001:db8::1]`; host proxy tối đa 253 ký tự.

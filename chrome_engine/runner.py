@@ -13,6 +13,7 @@ restore and tab snapshots are FoxProfile's own, shared with Camoufox.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 import sys
@@ -70,15 +71,42 @@ def _headless() -> bool:
     return HEADLESS in (True, "virtual")
 
 
+def _parse_rect(value: str) -> tuple[int, int, int, int] | None:
+    try:
+        x, y, w, h = (int(v) for v in value.split(","))
+    except ValueError:
+        return None
+    return (x, y, w, h) if w > 0 and h > 0 else None
+
+
+def _cdp_port() -> int | None:
+    try:
+        port = int(os.getenv("FOXPROFILE_CDP_PORT", ""))
+    except ValueError:
+        return None
+    return port if 1 <= port <= 65535 else None
+
+
 async def run_browser(
     profile_name: str,
     proxy_str: str,
     os_type: str,
     timezone: str = "",
     locale: str = "",
+    extensions_json: str = "[]",
+    window_rect: str = "",
 ) -> int:
     profile_dir = os.path.join(os.getcwd(), DATA_DIR, profile_name)
     proxy = proxy_str if proxy_str and proxy_str != "None" else None
+    try:
+        ext_dirs = [
+            d
+            for d in (json.loads(extensions_json) or [])
+            if isinstance(d, str) and os.path.isdir(d)
+        ]
+    except (ValueError, TypeError):
+        ext_dirs = []
+    extra_args = [f"--load-extension={','.join(ext_dirs)}"] if ext_dirs else []
     engine = ChromeEngine(
         profile_dir,
         platform=os_type,
@@ -87,6 +115,9 @@ async def run_browser(
         # "" keeps the timezone / locale following the proxy's exit IP.
         timezone=timezone,
         locale=locale,
+        extra_args=extra_args,
+        window_rect=_parse_rect(window_rect),
+        cdp_port=_cdp_port(),
     )
     _say(f"Starting Chrome engine for {profile_name}...")
     try:
@@ -162,7 +193,10 @@ async def _async_main(argv: list[str]) -> int:
             loop.add_signal_handler(sig, _shutdown.set)
     except NotImplementedError:
         pass
-    return await run_browser(*argv[:5])
+    args = list(argv[:7])
+    while len(args) < 7:
+        args.append("")
+    return await run_browser(*args)
 
 
 def main() -> int:

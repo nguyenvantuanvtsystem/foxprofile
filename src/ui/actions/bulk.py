@@ -43,10 +43,11 @@ def bulk_launch_profiles(
     bl: IBrowserLauncher,
     state: AppState,
     log: Callable[[str], None],
+    rects: dict[str, tuple[int, int, int, int]] | None = None,
 ) -> None:
     for name in names:
         if not bl.is_running(name) and not state.is_loading(name):
-            launch_or_stop(name, pm, bl, state, log)
+            launch_or_stop(name, pm, bl, state, log, (rects or {}).get(name))
 
 
 def bulk_stop_profiles(

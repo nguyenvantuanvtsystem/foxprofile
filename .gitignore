@@ -180,6 +180,9 @@ camoufox_data/
 profiles.json
 logs/
 
+# Local session memory (personal paths, never commit)
+SESSION_STATE.md
+
 # Tooling artefacts
 uv.lock
 e2e-output/

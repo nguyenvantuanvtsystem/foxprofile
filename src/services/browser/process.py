@@ -1,3 +1,4 @@
+import json
 import os
 import pathlib
 import subprocess
@@ -14,12 +15,15 @@ logger = get_logger("browser.process")
 _PROJECT_ROOT = str(pathlib.Path(__file__).parents[3])
 
 
-def runner_command(profile: Profile) -> list[str]:
+def runner_command(
+    profile: Profile, window_rect: tuple[int, int, int, int] | None = None
+) -> list[str]:
     """The runner for the profile's engine; both speak the same stdout protocol."""
     if profile.engine == "chrome":
         runner = ["-m", "chrome_engine.runner"]
     else:
         runner = [os.path.join(pathlib.Path(__file__).parent, "runner.py")]
+    rect = ",".join(str(int(v)) for v in window_rect) if window_rect else ""
     return [
         sys.executable,
         *runner,
@@ -28,18 +32,27 @@ def runner_command(profile: Profile) -> list[str]:
         profile.os_type,
         profile.timezone or "",
         profile.locale or "",
+        json.dumps(list(profile.extensions or [])),
+        rect,
     ]
 
 
-def spawn_browser(profile: Profile) -> subprocess.Popen:
+def spawn_browser(
+    profile: Profile,
+    window_rect: tuple[int, int, int, int] | None = None,
+    cdp_port: int | None = None,
+) -> subprocess.Popen:
     """Spawn the browser subprocess for the given profile."""
     env = os.environ.copy()
     existing_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = _PROJECT_ROOT + (
         os.pathsep + existing_pythonpath if existing_pythonpath else ""
     )
+    if cdp_port is not None:
+        # Chrome engine: DevTools Protocol on loopback (agents/automation).
+        env["FOXPROFILE_CDP_PORT"] = str(cdp_port)
     return subprocess.Popen(
-        runner_command(profile),
+        runner_command(profile, window_rect),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         cwd=pathlib.Path.cwd(),

@@ -76,6 +76,8 @@ def build_profile_card(
     is_selected: bool = False,
     on_select: Callable[[str], None] | None = None,
     on_cookies: Callable[[str], None] | None = None,
+    on_extensions: Callable[[str], None] | None = None,
+    on_device: Callable[[str], None] | None = None,
     device: str = "",
     since: str = "",
     failed: bool = False,
@@ -132,7 +134,13 @@ def build_profile_card(
                             build_launch_button(profile.name, is_loading, is_running, on_launch),
                             ft.Container(width=8),
                             *_action_buttons(
-                                profile.name, is_running, on_edit, on_delete, on_cookies
+                                profile.name,
+                                is_running,
+                                on_edit,
+                                on_delete,
+                                on_cookies,
+                                on_extensions,
+                                on_device,
                             ),
                         ],
                     ),
@@ -313,6 +321,8 @@ def _action_buttons(
     on_edit: Callable[[str], None],
     on_delete: Callable[[str], None],
     on_cookies: Callable[[str], None] | None,
+    on_extensions: Callable[[str], None] | None = None,
+    on_device: Callable[[str], None] | None = None,
 ) -> list[ft.IconButton]:
     buttons = []
     if on_cookies:
@@ -325,6 +335,28 @@ def _action_buttons(
                 disabled=is_running,
                 style=ICON_STYLE,
                 on_click=lambda _, n=name: on_cookies(n),
+            ),
+        )
+    if on_extensions:
+        buttons.append(
+            ft.IconButton(
+                icon=ft.Icons.EXTENSION_OUTLINED,
+                icon_size=19,
+                icon_color=COLORS["text_sub"],
+                tooltip=get_string("tooltip_extensions"),
+                style=ICON_STYLE,
+                on_click=lambda _, n=name: on_extensions(n),
+            ),
+        )
+    if on_device:
+        buttons.append(
+            ft.IconButton(
+                icon=ft.Icons.FINGERPRINT,
+                icon_size=19,
+                icon_color=COLORS["text_sub"],
+                tooltip=get_string("tooltip_device"),
+                style=ICON_STYLE,
+                on_click=lambda _, n=name: on_device(n),
             ),
         )
     return [

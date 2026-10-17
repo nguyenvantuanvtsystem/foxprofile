@@ -236,7 +236,7 @@ def test_spawn_passes_timezone_and_locale(monkeypatch):
     seen = {}
     monkeypatch.setattr(process.subprocess, "Popen", lambda args, **kw: seen.setdefault("a", args))
     process.spawn_browser(Profile("p", None, "linux", "Europe/Paris", None))
-    assert seen["a"][2:] == ["p", "None", "linux", "Europe/Paris", ""]
+    assert seen["a"][2:] == ["p", "None", "linux", "Europe/Paris", "", "[]", ""]
 
 
 @pytest.mark.parametrize(

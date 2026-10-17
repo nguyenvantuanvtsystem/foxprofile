@@ -137,13 +137,22 @@ def build_args(
     proxy_url: str | None = None,
     headless: bool | str = False,
     extra_args: tuple[str, ...] | list[str] = (),
+    window_rect: tuple[int, int, int, int] | None = None,
+    cdp_port: int | None = None,
 ) -> list[str]:
     """Command-line switches for a launch (Playwright adds its own before these)."""
     args = persona.to_args()
     if proxy_url:
         args.append(f"--proxy-server={proxy_url}")
     args += ["--no-first-run", "--no-default-browser-check", "--hide-crash-restore-bubble"]
-    if headless is True:
+    if cdp_port:
+        # DevTools Protocol for agents/automation (loopback only by default).
+        args.append(f"--remote-debugging-port={int(cdp_port)}")
+    if window_rect:
+        # Explicit tiling (nick farms): an exact position beats maximized.
+        x, y, w, h = (int(v) for v in window_rect)
+        args += [f"--window-position={x},{y}", f"--window-size={w},{h}"]
+    elif headless is True:
         # Headless otherwise reports an 800x600 screen.
         w, h = HEADLESS_SCREEN
         args += [f"--window-size={w},{h}", f"--screen-info={{0,0 {w}x{h}}}"]
@@ -172,6 +181,8 @@ class ChromeEngine:
         executable: str | Path | None = None,
         version: str | None = None,
         extra_args: tuple[str, ...] | list[str] = (),
+        window_rect: tuple[int, int, int, int] | None = None,
+        cdp_port: int | None = None,
         allow_unsupported: bool = False,
         sandbox: bool | None = None,
     ) -> None:
@@ -188,6 +199,8 @@ class ChromeEngine:
         self._executable = executable
         self._version = version
         self._extra_args = tuple(extra_args)
+        self._window_rect = window_rect
+        self._cdp_port = cdp_port
         self._allow_unsupported = allow_unsupported
         self.sandbox = default_sandbox() if sandbox is None else sandbox
 
@@ -235,15 +248,20 @@ class ChromeEngine:
             proxy_url=self.bridge.url if self.bridge else None,
             headless=self.headless,
             extra_args=self._extra_args,
+            window_rect=self._window_rect,
+            cdp_port=self._cdp_port,
         )
 
         from playwright.async_api import async_playwright
 
         self._playwright = await async_playwright().start()
         self.profile_dir.mkdir(parents=True, exist_ok=True)
-        set_webrtc_policy(
-            self.profile_dir, WEBRTC_POLICY_PROXY if self.bridge else WEBRTC_POLICY_DIRECT
-        )
+        webrtc_mode = getattr(persona, "webrtc", "proxy")
+        if webrtc_mode == "public":
+            policy = WEBRTC_POLICY_DIRECT
+        else:
+            policy = WEBRTC_POLICY_PROXY if self.bridge else WEBRTC_POLICY_DIRECT
+        set_webrtc_policy(self.profile_dir, policy)
         self.context = await self._playwright.chromium.launch_persistent_context(
             str(self.profile_dir),
             executable_path=str(executable),
@@ -254,8 +272,18 @@ class ChromeEngine:
             chromium_sandbox=self.sandbox,
             accept_downloads=True,
         )
-        if self.geo and self.geo.latitude is not None and self.geo.longitude is not None:
-            # Only the position is emulated; sites still have to ask for permission.
+        geo_mode = getattr(persona, "geo", "ask")
+        if geo_mode == "allow":
+            # Sites get the emulated position without asking.
+            await self.context.grant_permissions(["geolocation"])
+        if (
+            geo_mode != "block"
+            and self.geo
+            and self.geo.latitude is not None
+            and self.geo.longitude is not None
+        ):
+            # Only the position is emulated; sites still have to ask for permission
+            # unless geo mode is "allow".
             await self.context.set_geolocation(
                 {"latitude": self.geo.latitude, "longitude": self.geo.longitude, "accuracy": 50}
             )

@@ -41,6 +41,8 @@ def profile_response(profile: Profile, bl: IBrowserLauncher) -> ProfileResponse:
         timezone=profile.timezone,
         locale=profile.locale,
         engine=profile.engine,
+        extensions=list(profile.extensions),
+        cdp=profile.cdp,
         data_dir=os.path.join(os.getcwd(), DATA_DIR, profile.name),
         is_running=bl.is_running(profile.name),
     )

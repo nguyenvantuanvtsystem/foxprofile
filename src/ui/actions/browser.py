@@ -13,6 +13,7 @@ def launch_or_stop(
     bl: IBrowserLauncher,
     state: AppState,
     log: Callable[[str], None],
+    window_rect: tuple[int, int, int, int] | None = None,
 ) -> None:
     profile = pm.profiles.get(name)
     if not profile:
@@ -42,6 +43,9 @@ def launch_or_stop(
     def _on_ready() -> None:
         ready.set()
         state.set_loading(name, False)
+        port = bl.cdp_port(name)
+        if port:
+            log(get_string("cdp_open", name=name, port=port))
         state.schedule_refresh()
 
     def _on_stop() -> None:
@@ -57,6 +61,7 @@ def launch_or_stop(
             None,
             on_ready=_on_ready,
             on_stop=_on_stop,
+            window_rect=window_rect,
         )
     except ProfileBusyError:
         state.set_loading(name, False)

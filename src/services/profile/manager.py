@@ -8,13 +8,14 @@ import time
 
 from ...core.config import DATA_DIR, PROFILES_FILE
 from ...core.logging import get_logger
-from ...models.profile import ENGINES, Profile
+from ...models.profile import ENGINES, MAX_EXTENSIONS, Profile
 from ...utils.validation import (
     valid_or_none,
     validate_locale,
     validate_profile_name,
     validate_timezone,
 )
+from .extensions import clean_extension_list, validate_ext_dir
 from .transfer import export_to_zip, import_from_zip, read_profile_meta
 
 logger = get_logger("profile.manager")
@@ -76,6 +77,8 @@ class ProfileManager:
                             "timezone": valid_or_none(p_data.get("timezone"), validate_timezone),
                             "locale": valid_or_none(p_data.get("locale"), validate_locale),
                             "engine": _engine_or_default(p_data.get("engine")),
+                            "extensions": clean_extension_list(p_data.get("extensions")),
+                            "cdp": p_data.get("cdp", True) is not False,
                         }
                         self.profiles[name] = Profile(**clean_data)
                 logger.info("Loaded %d profiles", len(self.profiles))
@@ -109,6 +112,8 @@ class ProfileManager:
         timezone: str | None = None,
         locale: str | None = None,
         engine: str = "camoufox",
+        extensions: list[str] | None = None,
+        cdp: bool = True,
     ) -> bool:
         with self._lock:
             if self._find_by_casefold(name) is not None:
@@ -127,6 +132,8 @@ class ProfileManager:
                 timezone=timezone or None,
                 locale=locale or None,
                 engine=engine,
+                extensions=clean_extension_list(extensions),
+                cdp=cdp,
             )
             self.save_profiles()
             logger.info("Created profile: %s", name)
@@ -140,6 +147,8 @@ class ProfileManager:
         new_os: str,
         new_timezone: str | None = None,
         new_locale: str | None = None,
+        new_extensions: list[str] | None = None,
+        new_cdp: bool | None = None,
     ) -> bool:
         """Replace every field; a None/empty timezone or locale means automatic."""
         with self._lock:
@@ -188,6 +197,10 @@ class ProfileManager:
             profile.os_type = new_os
             profile.timezone = new_timezone or None
             profile.locale = new_locale or None
+            if new_extensions is not None:
+                profile.extensions = clean_extension_list(new_extensions)
+            if new_cdp is not None:
+                profile.cdp = bool(new_cdp)
 
             if new_name != original_name:
                 del self.profiles[original_name]
@@ -195,6 +208,39 @@ class ProfileManager:
 
             self.save_profiles()
             logger.info("Updated profile: %s -> %s", original_name, new_name)
+            return True
+
+    def attach_extension(self, name: str, path: str) -> tuple[bool, str]:
+        """Attach an unpacked extension dir to a profile. Returns (ok, message)."""
+        with self._lock:
+            profile = self.profiles.get(name)
+            if profile is None:
+                return False, "Profile not found"
+            ok, err = validate_ext_dir(path)
+            if not ok:
+                return False, err
+            norm = os.path.normpath(path)
+            if norm in (os.path.normpath(e) for e in profile.extensions):
+                return False, "Extension already attached"
+            if len(profile.extensions) >= MAX_EXTENSIONS:
+                return False, f"At most {MAX_EXTENSIONS} extensions per profile"
+            profile.extensions.append(norm)
+            self.save_profiles()
+            logger.info("Attached extension to %s: %s", name, norm)
+            return True, norm
+
+    def detach_extension(self, name: str, path: str) -> bool:
+        with self._lock:
+            profile = self.profiles.get(name)
+            if profile is None:
+                return False
+            norm = os.path.normpath(path)
+            before = len(profile.extensions)
+            profile.extensions = [e for e in profile.extensions if os.path.normpath(e) != norm]
+            if len(profile.extensions) == before:
+                return False
+            self.save_profiles()
+            logger.info("Detached extension from %s: %s", name, norm)
             return True
 
     def delete_profile(self, name: str) -> bool:

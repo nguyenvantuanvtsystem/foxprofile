@@ -16,6 +16,8 @@ class IProfileManager(Protocol):
         timezone: str | None = None,
         locale: str | None = None,
         engine: str = "camoufox",
+        extensions: list[str] | None = None,
+        cdp: bool = True,
     ) -> bool: ...
 
     def update_profile(
@@ -26,6 +28,8 @@ class IProfileManager(Protocol):
         new_os: str,
         new_timezone: str | None = None,
         new_locale: str | None = None,
+        new_extensions: list[str] | None = None,
+        new_cdp: bool | None = None,
     ) -> bool: ...
 
     def delete_profile(self, name: str) -> bool: ...
@@ -54,9 +58,12 @@ class IBrowserLauncher(Protocol):
         on_start: Callable[[], None] | None = None,
         on_ready: Callable[[], None] | None = None,
         on_stop: Callable[[], None] | None = None,
+        window_rect: tuple[int, int, int, int] | None = None,
     ) -> bool: ...
 
     def stop_profile(self, profile_name: str, timeout: int = 2) -> bool: ...
+
+    def cdp_port(self, profile_name: str) -> int | None: ...
 
     def running_profile_names(self) -> set[str]: ...
 

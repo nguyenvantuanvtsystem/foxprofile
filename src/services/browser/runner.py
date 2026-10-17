@@ -147,8 +147,17 @@ async def run_browser(
     os_type: str,
     timezone: str = "",
     locale: str = "",
+    extensions_json: str = "[]",
+    _window_rect: str = "",
 ) -> int:
     profile_dir = os.path.join(os.getcwd(), DATA_DIR, profile_name)
+
+    if extensions_json and extensions_json != "[]":
+        # Camoufox is Firefox-based: Chrome extensions cannot load here.
+        _safe_print("Note: extensions are only loaded by the Chrome engine; ignoring.")
+    if _window_rect:
+        # Window position at launch is a Chrome-engine feature for now.
+        _safe_print("Note: launch tiling is only supported by the Chrome engine.")
 
     launch_config = {
         "headless": HEADLESS,
@@ -255,7 +264,10 @@ async def run_browser(
 async def _async_main() -> int:
     loop = asyncio.get_running_loop()
     _setup_signals(loop)
-    return await run_browser(*sys.argv[1:6])
+    args = sys.argv[1:8]
+    while len(args) < 7:
+        args.append("")
+    return await run_browser(*args)
 
 
 if __name__ == "__main__":

@@ -57,8 +57,8 @@ def test_runner_command_follows_the_engine():
     assert camoufox[0] == chrome[0] == sys.executable
     assert camoufox[1].endswith("runner.py")
     assert chrome[1:3] == ["-m", "chrome_engine.runner"]
-    # Same positional protocol for both runners.
-    assert chrome[3:] == ["b", "1.2.3.4:80", "macos", "", ""]
+    # Same positional protocol for both runners (extensions JSON last).
+    assert chrome[3:] == ["b", "1.2.3.4:80", "macos", "", "", "[]", ""]
 
 
 def test_api_creates_and_reports_the_engine(client):

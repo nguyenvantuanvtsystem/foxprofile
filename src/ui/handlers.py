@@ -6,12 +6,17 @@ import flet as ft
 
 from ..core.strings import get_string
 from ..interfaces.protocols import IBrowserLauncher, IProfileManager, IProxyService
+from ..services.window_tile import APP_NAMES, arrange_windows, compute_rects
 from .actions.browser import launch_or_stop
 from .actions.bulk import bulk_delete_profiles, bulk_launch_profiles, bulk_stop_profiles
 from .actions.cookies import manage_cookies
 from .actions.profile import add_profile, delete_profile, edit_profile
 from .actions.transfer import export_profile, import_profile
 from .dialogs import open_log_dialog
+from .dialogs.device import manage_device
+from .dialogs.ext_bulk import open_bulk_extension_dialog
+from .dialogs.extensions import manage_extensions
+from .dialogs.sync import open_sync_dialog
 from .refs import UIRefs
 from .state import AppState
 
@@ -67,6 +72,19 @@ class AppHandlers:
         refs = self._get_refs()
         assert page is not None and refs is not None
         manage_cookies(page, name, refs.file_picker, self._pm, self._bl, self._log)
+
+    def on_extensions(self, name: str) -> None:
+        page = self._get_page()
+        refs = self._get_refs()
+        assert page is not None and refs is not None
+        manage_extensions(
+            page, name, refs.file_picker, self._pm, self._bl, self._log, self._refresh
+        )
+
+    def on_device(self, name: str) -> None:
+        page = self._get_page()
+        assert page is not None
+        manage_device(page, name, self._pm, self._bl, self._log, self._refresh)
 
     def open_add_dialog(self) -> None:
         page = self._get_page()
@@ -132,6 +150,169 @@ class AppHandlers:
     def on_bulk_stop(self) -> None:
         if names := list(self._state.selected_names()):
             bulk_stop_profiles(names, self._pm, self._bl, self._state, self._log)
+
+    def on_bulk_launch_tile(self) -> None:
+
+        from .components.bulk_bar import tile_layout
+
+        if not (names := sorted(self._state.selected_names())):
+            return
+        self._launch_tiled(names, tile_layout())
+
+    def _launch_tiled(self, names: list[str], layout: str) -> None:
+        import threading
+
+        from ..services.window_tile import compute_rects
+
+        try:
+            rect_list = compute_rects(len(names), layout)
+            rects = {name: rect_list[i] for i, name in enumerate(names)}
+        except OSError:
+            rects = {}
+        bulk_launch_profiles(names, self._pm, self._bl, self._state, self._log, rects)
+
+        def wait_and_tile() -> None:
+            import time
+
+            deadline = time.time() + 120
+            while time.time() < deadline:
+                if all(self._bl.is_running(n) for n in names):
+                    break
+                time.sleep(2)
+            running = [n for n in names if self._bl.is_running(n)]
+            if not running:
+                self._log(get_string("tile_no_running"))
+                return
+            arranged = 0
+            try:
+                arranged = self._arrange_names(running, layout)
+            except OSError:
+                # Already tiled by launch positions; fine-tuning needs access.
+                arranged = len(running)
+            ok = len([n for n in names if self._bl.is_running(n)])
+            self._log(get_string("tile_launched", ok=ok, total=len(names), arranged=arranged))
+            self._refresh()
+
+        threading.Thread(target=wait_and_tile, daemon=True).start()
+
+    def _arrange_names(self, names: list[str], layout: str) -> int:
+        by_app: dict[str, list[str]] = {}
+        for n in names:
+            profile = self._pm.profiles.get(n)
+            if profile is None:
+                continue
+            by_app.setdefault(APP_NAMES.get(profile.engine, "Chromium"), []).append(n)
+        count = 0
+        for app, group in by_app.items():
+            arrange_windows(app, compute_rects(len(group), layout))
+            count += len(group)
+        return count
+
+    def on_bulk_arrange(self) -> None:
+        import threading
+
+        from ..services.window_tile import is_permission_error
+        from .components.bulk_bar import tile_layout
+
+        running = [n for n in self._state.selected_names() if self._bl.is_running(n)]
+        if not running:
+            running = sorted(self._bl.running_profile_names())
+        if not running:
+            self._log(get_string("tile_no_running"))
+            return
+        layout = tile_layout()
+        try:
+            count = self._arrange_names(running, layout)
+        except OSError as e:
+            if not is_permission_error(e):
+                self._log(str(e))
+                return
+            # No permission to move live windows: stop and re-open them
+            # directly into the grid (tabs restore themselves).
+            self._log(get_string("tile_relaunching", count=len(running)))
+            names = sorted(running)
+
+            def relaunch() -> None:
+                for n in names:
+                    if self._bl.is_running(n):
+                        self._launch_stop_quiet(n)
+                self._launch_tiled(names, layout)
+
+            threading.Thread(target=relaunch, daemon=True).start()
+            return
+        self._log(get_string("tile_arranged", count=count))
+
+    def _launch_stop_quiet(self, name: str) -> None:
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            self._bl.stop_profile(name)
+
+    def on_bulk_sync(self) -> None:
+        page = self._get_page()
+        assert page is not None
+        selected = list(self._state.selected_names())
+        names = [n for n in selected if self._bl.is_running(n)]
+        if not names:
+            names = sorted(self._bl.running_profile_names())
+        if not names:
+            self._log(get_string("sync_need_running"))
+            return
+        open_sync_dialog(page, names, self._bl, self._log)
+
+    def on_bulk_follow(self) -> None:
+        """One-tap follow: first tap starts, second tap stops.
+
+        Master is the first-ticked running profile (or the first running
+        one when nothing is ticked); the rest mirror it.
+        """
+        import threading
+
+        from ..services.follow_toggle import pick_follow_group
+        from .dialogs.follow import mirror_start, mirror_status, mirror_stop
+
+        def work() -> None:
+            try:
+                if mirror_status().get("active"):
+                    mirror_stop()
+                    self._state.follow_active = False
+                    self._state.follow_master = ""
+                    self._log(get_string("follow_stopped"))
+                    self._refresh()
+                    return
+            except Exception as e:  # noqa: BLE001 - report, don't crash the toggle
+                self._log(str(e)[:200])
+                return
+            running = sorted(self._bl.running_profile_names())
+            if not running:
+                self._log(get_string("sync_need_running"))
+                return
+            group = pick_follow_group(self._state.selection_order(), running)
+            if group is None:
+                self._log(get_string("follow_need_two"))
+                return
+            master, followers = group
+            try:
+                mirror_start(master, followers)
+            except Exception as e:  # noqa: BLE001 - report, don't crash the toggle
+                self._log(str(e)[:200])
+                return
+            self._state.follow_active = True
+            self._state.follow_master = master
+            self._log(get_string("follow_active", master=master, count=len(followers)))
+            self._refresh()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_bulk_ext_install(self) -> None:
+        page = self._get_page()
+        assert page is not None
+        selected = sorted(self._state.selected_names())
+        names = selected or sorted(self._pm.profiles.keys())
+        if not names:
+            self._log(get_string("ext_bulk_none"))
+            return
+        open_bulk_extension_dialog(page, names, self._pm, self._log, self._refresh)
 
     # --- Log handlers ---
 

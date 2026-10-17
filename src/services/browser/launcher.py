@@ -1,6 +1,7 @@
 import atexit
 import contextlib
 import json
+import socket
 import subprocess
 import threading
 import urllib.error
@@ -63,7 +64,20 @@ class BrowserLauncher:
         self._launch_results: dict[str, _LaunchResult] = {}
         self._busy: set[str] = set()
         self._controls: dict[str, tuple[int, str]] = {}
+        self._cdp_ports: dict[str, int] = {}
         atexit.register(self.shutdown_all)
+
+    @staticmethod
+    def pick_free_port() -> int:
+        """A currently-free loopback TCP port for --remote-debugging-port."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    def cdp_port(self, profile_name: str) -> int | None:
+        """The DevTools port of a running Chrome profile, if it has one."""
+        with self._lock:
+            return self._cdp_ports.get(profile_name)
 
     @contextlib.contextmanager
     def exclusive(self, profile_name: str) -> Iterator[None]:
@@ -112,6 +126,7 @@ class BrowserLauncher:
         on_start: Callable[[], None] | None = None,
         on_ready: Callable[[], None] | None = None,
         on_stop: Callable[[], None] | None = None,
+        window_rect: tuple[int, int, int, int] | None = None,
     ) -> bool:
         """Launch a profile's browser in the background.
 
@@ -119,6 +134,7 @@ class BrowserLauncher:
         has a browser. Otherwise returns True and later calls on_ready or
         on_stop, also when spawning fails. Raises ProfileBusyError while
         another launch or a stopped-profile operation holds the profile.
+        window_rect positions the window at launch (tiling, no permissions).
         """
         with self._lock:
             if profile.name in self._active_sessions:
@@ -145,6 +161,7 @@ class BrowserLauncher:
                         self._controls.pop(profile.name, None)
                         self._active_sessions.pop(profile.name, None)
                         self._stop_notifiers.pop(profile.name, None)
+                        self._cdp_ports.pop(profile.name, None)
                 log_callback(get_string("session_ended", name=profile.name))
                 logger.info(f"Session ended for profile: {profile.name}")
                 if on_stop:
@@ -160,10 +177,15 @@ class BrowserLauncher:
                 on_start()
 
             try:
-                proc = spawn_browser(profile)
+                cdp_port = (
+                    self.pick_free_port() if profile.engine == "chrome" and profile.cdp else None
+                )
+                proc = spawn_browser(profile, window_rect, cdp_port)
                 with self._lock:
                     self._active_sessions[profile.name] = proc
                     self._stop_notifiers[profile.name] = stop_event
+                    if cdp_port is not None:
+                        self._cdp_ports[profile.name] = cdp_port
                     self._busy.discard(profile.name)
                     registered = True
 
@@ -200,6 +222,7 @@ class BrowserLauncher:
             proc = self._active_sessions.pop(profile_name)
             notifier = self._stop_notifiers.pop(profile_name, None)
             self._controls.pop(profile_name, None)
+            self._cdp_ports.pop(profile_name, None)
         if notifier:
             notifier.set()
         terminate(proc, profile_name, timeout)
@@ -245,6 +268,7 @@ class BrowserLauncher:
                 self._active_sessions.pop(n, None)
                 self._stop_notifiers.pop(n, None)
                 self._controls.pop(n, None)
+                self._cdp_ports.pop(n, None)
             return set(self._active_sessions.keys())
 
     def running_count(self) -> int:
@@ -259,6 +283,7 @@ class BrowserLauncher:
             del self._active_sessions[profile_name]
             self._stop_notifiers.pop(profile_name, None)
             self._controls.pop(profile_name, None)
+            self._cdp_ports.pop(profile_name, None)
             return False
 
     def _monitor_process(

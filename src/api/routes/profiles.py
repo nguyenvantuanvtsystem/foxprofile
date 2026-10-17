@@ -4,14 +4,20 @@ import os
 import pathlib
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import PlainTextResponse
 
 from ...core.config import DATA_DIR
 from ...core.logging import get_logger
-from ...models.profile import ENGINES
+from ...models.profile import ENGINES, MAX_EXTENSIONS
 from ...services.browser import chrome_prefetch, cookies, fingerprint
 from ...services.browser.launcher import ProfileBusyError
+from ...services.profile.extensions import (
+    attached_ids,
+    pin_extensions,
+    save_upload,
+    validate_ext_dir,
+)
 from ...services.proxy.geo_check import check_geo
 from ...utils.validation import (
     validate_locale,
@@ -26,8 +32,16 @@ from ..schemas.profiles import (
     CookieImportRequest,
     CookieImportResponse,
     DataDirResponse,
+    DeviceResponse,
+    DeviceUpdate,
     ExportRequest,
     ExportResponse,
+    ExtensionAttachRequest,
+    ExtensionAttachResponse,
+    ExtensionBulkAttachRequest,
+    ExtensionBulkAttachResponse,
+    ExtensionBulkAttachResult,
+    ExtensionListResponse,
     FingerprintResponse,
     ImportRequest,
     ImportResponse,
@@ -74,6 +88,19 @@ def _require_geo(timezone: str | None, locale: str | None) -> None:
             raise HTTPException(status_code=400, detail=msg)
 
 
+def _require_extensions(paths: list[str] | None) -> None:
+    if not paths:
+        return
+    if len(paths) > MAX_EXTENSIONS:
+        raise HTTPException(
+            status_code=400, detail=f"At most {MAX_EXTENSIONS} extensions per profile"
+        )
+    for p in paths:
+        ok, err = validate_ext_dir(p)
+        if not ok:
+            raise HTTPException(status_code=400, detail=f"Bad extension dir {p!r}: {err}")
+
+
 @router.get("", response_model=ProfileListResponse)
 def list_profiles(
     pm: IProfileManager = Depends(get_profile_manager),
@@ -106,6 +133,7 @@ def create_profile(
         valid, msg = validate_proxy_format(body.proxy)
         if not valid:
             raise HTTPException(status_code=400, detail=msg)
+    _require_extensions(body.extensions)
 
     if not pm.add_profile(
         body.name,
@@ -114,6 +142,8 @@ def create_profile(
         body.timezone or None,
         body.locale or None,
         body.engine,
+        body.extensions,
+        body.cdp,
     ):
         raise HTTPException(status_code=409, detail="Profile already exists")
 
@@ -122,6 +152,40 @@ def create_profile(
         chrome_prefetch.start()
     bus.emit()
     return build_profile_response(body.name, pm, bl)
+
+
+@router.post(
+    "/extensions/attach-many",
+    response_model=ExtensionBulkAttachResponse,
+    responses={400: {"model": ErrorResponse}},
+)
+def bulk_attach_extension(
+    body: ExtensionBulkAttachRequest,
+    pm: IProfileManager = Depends(get_profile_manager),
+    bus: EventBus = Depends(get_event_bus),
+) -> ExtensionBulkAttachResponse:
+    """Attach one unpacked extension dir to many profiles.
+
+    Safe on running profiles (takes effect on next launch); only the
+    toolbar pin needs a stopped browser.
+    """
+    ok, err = validate_ext_dir(body.path)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"Bad extension dir: {err}")
+    results = []
+    for name in body.names:
+        require_profile(name, pm)
+        good, msg = pm.attach_extension(name, body.path)
+        results.append(
+            ExtensionBulkAttachResult(
+                name=name, ok=good, path=msg if good else None, error=None if good else msg
+            )
+        )
+    bus.emit()
+    ok_count = sum(1 for r in results if r.ok)
+    return ExtensionBulkAttachResponse(
+        results=results, ok_count=ok_count, fail_count=len(results) - ok_count
+    )
 
 
 @router.get(
@@ -182,9 +246,19 @@ def update_profile(
         valid, msg = validate_proxy_format(new_proxy)
         if not valid:
             raise HTTPException(status_code=400, detail=msg)
+    new_extensions = supplied.get("extensions", profile.extensions)
+    if "extensions" in supplied:
+        _require_extensions(new_extensions)
 
     if not pm.update_profile(
-        name, new_name, new_proxy or "", new_os, new_timezone or None, new_locale or None
+        name,
+        new_name,
+        new_proxy or "",
+        new_os,
+        new_timezone or None,
+        new_locale or None,
+        new_extensions if "extensions" in supplied else None,
+        supplied.get("cdp"),
     ):
         raise HTTPException(status_code=409, detail="Update failed (name conflict?)")
 
@@ -389,3 +463,221 @@ def check_profile_ip(
     """
     profile = require_profile(name, pm)
     return GeoCheckResponse.from_result(check_geo(profile.proxy, profile.timezone, profile.locale))
+
+
+@router.get(
+    "/{name}/extensions",
+    response_model=ExtensionListResponse,
+    responses={404: {"model": ErrorResponse}},
+)
+def list_extensions(
+    name: str,
+    pm: IProfileManager = Depends(get_profile_manager),
+) -> ExtensionListResponse:
+    """Unpacked extension dirs attached to a profile (loaded at launch, Chrome engine)."""
+    profile = require_profile(name, pm)
+    return ExtensionListResponse(
+        name=name, extensions=list(profile.extensions), total=len(profile.extensions)
+    )
+
+
+@router.post(
+    "/{name}/extensions",
+    response_model=ExtensionAttachResponse,
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+)
+def attach_extension(
+    name: str,
+    body: ExtensionAttachRequest,
+    pm: IProfileManager = Depends(get_profile_manager),
+    bl: IBrowserLauncher = Depends(get_browser_launcher),
+    bus: EventBus = Depends(get_event_bus),
+) -> ExtensionAttachResponse:
+    """Attach an unpacked extension dir (takes effect on the next launch)."""
+    require_profile(name, pm)
+    _require_stopped(name, bl, "changing extensions")
+    ok, msg = pm.attach_extension(name, body.path)
+    if not ok:
+        return ExtensionAttachResponse(success=False, error=msg)
+    bus.emit()
+    return ExtensionAttachResponse(success=True, path=msg)
+
+
+@router.delete(
+    "/{name}/extensions",
+    response_model=SuccessResponse,
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+)
+def detach_extension(
+    name: str,
+    path: str = Query(..., description="Attached extension dir to remove"),
+    pm: IProfileManager = Depends(get_profile_manager),
+    bl: IBrowserLauncher = Depends(get_browser_launcher),
+    bus: EventBus = Depends(get_event_bus),
+) -> SuccessResponse:
+    require_profile(name, pm)
+    _require_stopped(name, bl, "changing extensions")
+    if not pm.detach_extension(name, path):
+        raise HTTPException(status_code=404, detail="Extension not attached to this profile")
+    bus.emit()
+    return SuccessResponse(message=f"Extension detached from '{name}'")
+
+
+@router.post(
+    "/{name}/extensions/upload",
+    response_model=ExtensionAttachResponse,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+async def upload_extension(
+    name: str,
+    file: UploadFile = File(...),
+    pm: IProfileManager = Depends(get_profile_manager),
+    bl: IBrowserLauncher = Depends(get_browser_launcher),
+    bus: EventBus = Depends(get_event_bus),
+) -> ExtensionAttachResponse:
+    """Upload a .zip of an unpacked extension, store it, and attach it to a profile."""
+    require_profile(name, pm)
+    _require_stopped(name, bl, "changing extensions")
+    data = await file.read()
+    ok, result = save_upload(name, file.filename or "upload.zip", data)
+    if not ok:
+        return ExtensionAttachResponse(success=False, error=result)
+    attached, msg = pm.attach_extension(name, result)
+    if not attached:
+        return ExtensionAttachResponse(success=False, error=msg)
+    bus.emit()
+    return ExtensionAttachResponse(success=True, path=msg)
+
+
+@router.post(
+    "/{name}/extensions/pin",
+    response_model=SuccessResponse,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+def pin_profile_extensions(
+    name: str,
+    pm: IProfileManager = Depends(get_profile_manager),
+    bl: IBrowserLauncher = Depends(get_browser_launcher),
+) -> SuccessResponse:
+    """Pin attached extensions to the toolbar. Browser must be stopped.
+
+    Resolves install IDs from a previous launch, then writes them into
+    extensions.pinned_extensions so the icons show on the next start.
+    """
+    profile = require_profile(name, pm)
+    _require_stopped(name, bl, "pinning extensions")
+    if profile.engine != "chrome":
+        raise HTTPException(status_code=400, detail="Extensions load only on the Chrome engine")
+    if not profile.extensions:
+        raise HTTPException(status_code=400, detail="No extensions attached to this profile")
+    profile_dir = os.path.join(os.getcwd(), DATA_DIR, name)
+    ids = attached_ids(profile_dir, profile.extensions)
+    missing = [p for p, i in ids.items() if not i]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Open the profile once first so Chrome registers: {missing[0]}",
+        )
+    ok, msg = pin_extensions(profile_dir, list(ids.values()))
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return SuccessResponse(message=f"Pinned {len(ids)} extension(s) on '{name}'")
+
+
+def _require_chrome_device(name: str, pm: IProfileManager):
+    """The saved Chrome persona, or an HTTP error explaining why not."""
+    from chrome_engine import persona as chrome_persona
+
+    profile = require_profile(name, pm)
+    if profile.engine != "chrome":
+        raise HTTPException(status_code=400, detail="Advanced device is Chrome-engine only")
+    profile_dir = os.path.join(os.getcwd(), DATA_DIR, name)
+    persona = chrome_persona.load(profile_dir)
+    if persona is None:
+        raise HTTPException(status_code=400, detail="Open the profile once first")
+    return persona, profile_dir
+
+
+@router.get(
+    "/{name}/device",
+    response_model=DeviceResponse,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+def get_device(
+    name: str,
+    pm: IProfileManager = Depends(get_profile_manager),
+) -> DeviceResponse:
+    """The stable device this profile presents (seed, brand, UA, WebRTC, geo...)."""
+    profile = require_profile(name, pm)
+    persona, _ = _require_chrome_device(name, pm)
+    return DeviceResponse(
+        name=name,
+        engine=profile.engine,
+        seed=persona.seed,
+        platform=persona.platform,
+        platform_version=persona.platform_version,
+        brand=persona.brand,
+        hardware_concurrency=persona.hardware_concurrency,
+        timezone=persona.timezone,
+        locale=persona.locale,
+        user_agent=persona.user_agent,
+        webrtc=persona.webrtc,
+        geo=persona.geo,
+    )
+
+
+@router.patch(
+    "/{name}/device",
+    response_model=DeviceResponse,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+def update_device(
+    name: str,
+    body: DeviceUpdate,
+    pm: IProfileManager = Depends(get_profile_manager),
+    bl: IBrowserLauncher = Depends(get_browser_launcher),
+    bus: EventBus = Depends(get_event_bus),
+) -> DeviceResponse:
+    """Change device fields (takes effect on next launch)."""
+    from chrome_engine import persona as chrome_persona
+
+    require_profile(name, pm)
+    _require_stopped(name, bl, "changing the device")
+    _, profile_dir = _require_chrome_device(name, pm)
+    supplied = body.model_dump(exclude_unset=True)
+    if "hardware_concurrency" in supplied and supplied["hardware_concurrency"] is not None:
+        try:
+            supplied["hardware_concurrency"] = int(supplied["hardware_concurrency"])
+        except (TypeError, ValueError) as e:
+            raise HTTPException(status_code=400, detail="hardware_concurrency must be 1..64") from e
+    try:
+        chrome_persona.update_fields(profile_dir, **supplied)
+    except chrome_persona.PersonaError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    bus.emit()
+    return get_device(name, pm)
+
+
+@router.post(
+    "/{name}/device/regenerate",
+    response_model=DeviceResponse,
+    responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+)
+def regenerate_device(
+    name: str,
+    pm: IProfileManager = Depends(get_profile_manager),
+    bl: IBrowserLauncher = Depends(get_browser_launcher),
+    bus: EventBus = Depends(get_event_bus),
+) -> DeviceResponse:
+    """New random device seed (sites see a different machine; expect re-logins)."""
+    from chrome_engine import persona as chrome_persona
+
+    require_profile(name, pm)
+    _require_stopped(name, bl, "changing the device")
+    _, profile_dir = _require_chrome_device(name, pm)
+    try:
+        chrome_persona.regenerate_seed(profile_dir)
+    except chrome_persona.PersonaError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    bus.emit()
+    return get_device(name, pm)

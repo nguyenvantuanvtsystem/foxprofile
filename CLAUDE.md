@@ -65,3 +65,14 @@ Run everything from the repo root: `profiles.json`, `camoufox_data/`, `logs/` an
 - `README.md` (English, primary) and `README.vi.md` (Vietnamese) must stay in sync. `CONTRIBUTING.md`, `SECURITY.md` and `docs/DEPLOY.md` are in Vietnamese.
 - Release: bump `version` in `pyproject.toml`, `VERSION` in `src/api/app.py`, and `CHANGELOG.md` in one PR, then tag `vX.Y.Z`.
 - `main` is protected: changes go through a PR with all CI checks green. Commits follow Conventional Commits.
+
+## Live testing on a real machine
+
+Real-browser checks open real windows on the user's screen and Dock — keep them invisible-ish:
+
+- Open at most 2–3 browsers per check, even when a feature targets more; fan-out logic is already covered by unit tests with a fake launcher.
+- Stop every browser you started and verify none linger (`ps` shows no engine processes for the test profiles) before reporting done.
+- Never modify the Dock (no `persistent-apps` edits, no Keep-in-Dock) and never kill the user's own browsers or profiles; test profiles live under a scratch `FOXPROFILE_DATA_DIR`, never the user's real data.
+- Scratch test profiles must use `engine: "chrome"`: the user works with Chrome windows, so never open Firefox/Camoufox windows on their screen. If the user explicitly asks to test on their own open profiles, only toggle mirror start/stop and read status — never navigate, click or type inside their pages.
+- Keep the Dock clean of clutter: each running browser and each orphaned Flet window shows its own icon. After any restart, kill orphaned `Flet.app` windows from previous runs (only the current one stays). `show-recents` stays off so quit apps vanish instead of lingering in Recents.
+- The app launcher (`scripts/run-app.sh`, copied into the .app bundle) is single-instance: it focuses the running app instead of starting a second backend, and reaps orphan Flet/Chromium processes before starting. Restart the app through it, never by killing Python and re-running `src.main` by hand.

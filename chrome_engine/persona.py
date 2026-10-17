@@ -22,6 +22,15 @@ PLATFORMS = ("windows", "macos", "linux")
 BRANDS = ("Chrome", "Edge")
 SEED_MAX = 2**31 - 1
 
+# WebRTC IP handling per profile (GPM-style, minus full disable which the
+# fork cannot do reliably): "proxy" follows the launch (proxied exit IP when
+# a proxy is set, public interface otherwise), "public" always exposes only
+# the public interface.
+WEBRTC_MODES = ("proxy", "public")
+# Geolocation: "ask" leaves the site prompt (position emulated when known),
+# "allow" auto-grants it everywhere, "block" denies every permission prompt.
+GEO_MODES = ("ask", "allow", "block")
+
 # Values Chrome reports in navigator.userAgentData platformVersion, weighted
 # roughly by usage. Windows: 10.0.0 = Windows 10, 15.0.0 = 11 23H2, 19.0.0 = 11 24H2.
 _PLATFORM_VERSIONS: dict[str, list[tuple[str, float]]] = {
@@ -72,6 +81,10 @@ class Persona:
     # None: follow the proxy's exit IP (or the host when there is no proxy).
     timezone: str | None = None
     locale: str | None = None
+    # None: UA derived from platform/version/brand (consistent by default).
+    user_agent: str | None = None
+    webrtc: str = "proxy"
+    geo: str = "ask"
 
     def __post_init__(self) -> None:
         validate(self)
@@ -94,6 +107,11 @@ class Persona:
         if self.locale:
             args.append(f"--lang={self.locale}")
             args.append(f"--accept-lang={accept_languages(self.locale)}")
+        if self.user_agent:
+            args.append(f"--user-agent={self.user_agent}")
+        if self.geo == "block":
+            # Denies geolocation and every other permission prompt as well.
+            args.append("--deny-permission-prompts")
         return args
 
     def to_json(self) -> dict[str, Any]:
@@ -122,6 +140,12 @@ def validate(p: Persona) -> None:
         _check_timezone(p.timezone)
     if p.locale is not None and not _LOCALE.match(p.locale):
         raise PersonaError("locale must look like en-US or vi-VN")
+    if p.user_agent is not None and (not p.user_agent or len(p.user_agent) > 500):
+        raise PersonaError("user_agent must be a non-empty string (or unset)")
+    if p.webrtc not in WEBRTC_MODES:
+        raise PersonaError(f"webrtc must be one of {', '.join(WEBRTC_MODES)}")
+    if p.geo not in GEO_MODES:
+        raise PersonaError(f"geo must be one of {', '.join(GEO_MODES)}")
 
 
 def _check_timezone(name: str) -> None:
@@ -169,7 +193,22 @@ def generate(
         hardware_concurrency=_pick(rng, _CORES[platform]),
         timezone=timezone,
         locale=locale,
+        user_agent=_default_ua(platform),
     )
+
+
+def _default_ua(platform: str) -> str | None:
+    """Newest bundled Chrome UA for the platform, so every profile is born
+    with a concrete, matching UA string (GPM-style). Imported lazily to keep
+    this module free of service-layer dependencies at import time."""
+    try:
+        from src.services.ua_store import list_uas
+    except ImportError:
+        return None
+    for label, ua in list_uas(platform):
+        if label.startswith("Chrome"):
+            return ua
+    return None
 
 
 def persona_path(profile_dir: str | Path) -> Path:
@@ -206,6 +245,46 @@ def load_or_create(profile_dir: str | Path, platform: str, **overrides: Any) -> 
         persona = replace(persona, **overrides)
     save(profile_dir, persona)
     return persona
+
+
+def regenerate_seed(profile_dir: str | Path) -> Persona:
+    """A brand-new device for the profile (new random seed, rest kept).
+
+    Sites see a different machine afterwards; expect re-logins. The profile
+    must be stopped (its persona file is rewritten).
+    """
+    current = load(profile_dir)
+    if current is None:
+        raise PersonaError("no persona saved for this profile yet (open it once first)")
+    fresh = replace(current, seed=1 + secrets.randbelow(SEED_MAX))
+    save(profile_dir, fresh)
+    return fresh
+
+
+def update_fields(profile_dir: str | Path, **fields: Any) -> Persona:
+    """Change device fields (brand, platform_version, hardware_concurrency,
+    user_agent, webrtc, geo). Unknown/None fields are ignored; "" clears
+    user_agent back to derived. Raises PersonaError on bad values."""
+    current = load(profile_dir)
+    if current is None:
+        raise PersonaError("no persona saved for this profile yet (open it once first)")
+    allowed = {
+        "brand",
+        "platform_version",
+        "hardware_concurrency",
+        "user_agent",
+        "webrtc",
+        "geo",
+    }
+    patch = {}
+    for key, value in fields.items():
+        if key not in allowed or value is None:
+            continue
+        patch[key] = value or None if key == "user_agent" else value
+    # Dataclass validation runs in replace(); unknown keys would TypeError.
+    fresh = replace(current, **patch)
+    save(profile_dir, fresh)
+    return fresh
 
 
 def compatibility(host: str, platform: str) -> tuple[str, str]:

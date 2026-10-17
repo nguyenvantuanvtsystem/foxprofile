@@ -22,7 +22,7 @@ from ..theme.styles import ACCENT_STYLE, DLG_FIELD_KWARGS, OUTLINE_STYLE
 def open_profile_dialog(
     page: ft.Page,
     proxy_service: IProxyService,
-    on_save: Callable[[str, str, str, str, str, str], str | None],
+    on_save: Callable[[str, str, str, str, str, str, bool], str | None],
     profile: Profile | None = None,
 ) -> None:
     is_edit = profile is not None
@@ -45,6 +45,38 @@ def open_profile_dialog(
         hint_text="socks5://user:pass@host:port",
         text_style=_DATA,
         **DLG_FIELD_KWARGS,
+    )
+    start_direct = profile is not None and not profile.proxy
+    net_mode = ft.RadioGroup(
+        value="direct" if start_direct else "proxy",
+        content=ft.Row(
+            spacing=16,
+            controls=[
+                ft.Radio(value="direct", label=get_string("net_mode_direct")),
+                ft.Radio(value="proxy", label=get_string("net_mode_proxy")),
+            ],
+        ),
+    )
+    net_hint = ft.Text(
+        get_string("net_direct_hint"),
+        size=12,
+        color=COLORS["text_dim"],
+        visible=start_direct,
+    )
+
+    def refresh_net_mode() -> None:
+        direct = net_mode.value == "direct"
+        proxy_field.disabled = direct
+        check_btn.disabled = direct
+        ip_btn.disabled = False
+        net_hint.visible = direct
+        page.update()
+
+    net_mode.on_change = lambda _: refresh_net_mode()
+
+    cdp_check = ft.Checkbox(
+        label=get_string("cdp_label"),
+        value=profile.cdp if profile is not None else True,
     )
     os_dropdown = build_os_dropdown(
         profile.os_type if profile is not None else "windows",
@@ -123,14 +155,17 @@ def open_profile_dialog(
         check_btn,
         proxy_service,
     )
+    # Creation profiles start on proxy mode; edits with no proxy start direct.
+    proxy_field.disabled = check_btn.disabled = start_direct
 
     def on_submit(_: ft.ControlEvent) -> None:
         name = (name_field.value or "").strip()
-        proxy = (proxy_field.value or "").strip()
+        proxy = "" if net_mode.value == "direct" else (proxy_field.value or "").strip()
         os_type = os_dropdown.value or "windows"
         engine = engine_dropdown.value or "camoufox"
         timezone = (timezone_field.value or "").strip()
         locale = (locale_field.value or "").strip()
+        cdp = bool(cdp_check.value)
         name_error.visible = proxy_error.visible = geo_error.visible = False
 
         valid_name, name_err = validate_profile_name(name)
@@ -155,7 +190,7 @@ def open_profile_dialog(
                 page.update()
                 return
 
-        error = on_save(name, proxy, os_type, timezone, locale, engine)
+        error = on_save(name, proxy, os_type, timezone, locale, engine, cdp)
         if error:
             name_error.value = error
             name_error.visible = True
@@ -172,7 +207,7 @@ def open_profile_dialog(
     dlg = ft.AlertDialog(
         modal=True,
         bgcolor=COLORS["card_bg"],
-        shape=ft.RoundedRectangleBorder(radius=12),
+        shape=ft.RoundedRectangleBorder(radius=18),
         title_padding=ft.Padding.only(left=24, right=24, top=22, bottom=0),
         content_padding=ft.Padding.only(left=24, right=24, top=4, bottom=8),
         actions_padding=ft.Padding.only(left=24, right=24, top=8, bottom=20),
@@ -212,6 +247,9 @@ def open_profile_dialog(
                         ],
                     ),
                     engine_note,
+                    cdp_check,
+                    _field(get_string("net_mode"), net_mode, None),
+                    net_hint,
                     _field(
                         get_string("proxy_optional"), proxy_field, get_string("proxy_format_hint")
                     ),
